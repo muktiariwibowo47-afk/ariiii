@@ -1,0 +1,99 @@
+name: Build FASS Native Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      blender_ref:
+        description: Blender source ref
+        required: false
+        default: blender-v5.2-release
+      profile:
+        description: Build profile
+        required: false
+        default: lite
+        type: choice
+        options: [lite, full]
+
+env:
+  BLENDER_REF: ${{ inputs.blender_ref || 'blender-v5.2-release' }}
+  PROFILE: ${{ inputs.profile || 'lite' }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout FASS repo
+        uses: actions/checkout@v4
+
+      - name: Materialize FASS source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path fass\core, fass\blender_patch, tools, smoke | Out-Null
+          [IO.File]::WriteAllBytes("fass\core\fass_core.hh", [Convert]::FromBase64String((Get-Content payload\fass_core_hh.b64 -Raw).Trim()))
+          [IO.File]::WriteAllBytes("fass\core\fass_core.cc", [Convert]::FromBase64String((Get-Content payload\fass_core_cc.b64 -Raw).Trim()))
+          [IO.File]::WriteAllBytes("fass\blender_patch\fass_engine.cc", [Convert]::FromBase64String((Get-Content payload\fass_engine_cc.b64 -Raw).Trim()))
+          [IO.File]::WriteAllBytes("tools\apply_fass_patch.py", [Convert]::FromBase64String((Get-Content payload\apply_fass_patch_py.b64 -Raw).Trim()))
+          [IO.File]::WriteAllBytes("tools\verify_no_bridge.py", [Convert]::FromBase64String((Get-Content payload\verify_no_bridge_py.b64 -Raw).Trim()))
+          [IO.File]::WriteAllBytes("smoke\smoke_test.py", [Convert]::FromBase64String((Get-Content payload\smoke_test_py.b64 -Raw).Trim()))
+
+      - name: Verify pure FASS source
+        shell: cmd
+        run: python tools\verify_no_bridge.py
+
+      - name: Clone Blender 5.2 LTS
+        shell: cmd
+        run: git clone --filter=blob:none --single-branch --branch "%BLENDER_REF%" https://github.com/blender/blender.git blender-src
+
+      - name: Patch Blender with FASS
+        shell: cmd
+        run: python tools\apply_fass_patch.py blender-src
+
+      - name: Download Blender build libraries
+        shell: cmd
+        working-directory: blender-src
+        run: make update
+
+      - name: Build Blender + FASS
+        shell: cmd
+        working-directory: blender-src
+        run: |
+          if "%PROFILE%"=="full" (make) else (make lite)
+
+      - name: Locate Blender build
+        id: locate
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path "${{ github.workspace }}" -Filter blender.exe -Recurse -File |
+            Where-Object { $_.FullName -match 'build_windows.*\\bin\\Release\\blender.exe$' } |
+            Select-Object -First 1
+          if (-not $exe) { throw "Built blender.exe was not found" }
+          "bin_dir=$($exe.Directory.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Native FASS smoke test
+        shell: pwsh
+        run: |
+          $exe = Join-Path "${{ steps.locate.outputs.bin_dir }}" "blender.exe"
+          & $exe --background --factory-startup --python "${{ github.workspace }}\smoke\smoke_test.py"
+          if ($LASTEXITCODE -ne 0) { throw "FASS smoke test failed with exit code $LASTEXITCODE" }
+
+      - name: Add FASS marker
+        shell: pwsh
+        run: |
+          @"
+          FASS Native V0.1
+          Pure FASS C++ reference renderer
+          No Cycles/EEVEE render bridge
+          "@ | Set-Content (Join-Path "${{ steps.locate.outputs.bin_dir }}" "FASS_BUILD.txt")
+
+      - name: Upload portable FASS Blender
+        uses: actions/upload-artifact@v4
+        with:
+          name: FASS-Blender-5.2-Windows-x64-${{ env.PROFILE }}
+          path: ${{ steps.locate.outputs.bin_dir }}
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14
