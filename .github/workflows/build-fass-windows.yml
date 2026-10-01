@@ -55,7 +55,7 @@ jobs:
       - name: Download Blender build libraries
         shell: cmd
         working-directory: blender-src
-        run: make update
+        run: echo y|make update
 
       - name: Build Blender + FASS
         shell: cmd
