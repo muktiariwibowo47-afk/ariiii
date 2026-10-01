@@ -46,7 +46,7 @@ jobs:
 
       - name: Clone Blender 5.2 LTS
         shell: cmd
-        run: git clone --filter=blob:none --single-branch --branch "%BLENDER_REF%" https://github.com/blender/blender.git blender-src
+        run: git clone --filter=blob:none --single-branch --branch "%BLENDER_REF%" https://projects.blender.org/blender/blender.git blender-src
 
       - name: Patch Blender with FASS
         shell: cmd
